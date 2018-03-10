@@ -1,0 +1,381 @@
+package com.eyas.controllers;
+
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+
+import com.eyas.base.BaseController;
+import com.eyas.base.CONST;
+import com.eyas.models.News;
+import com.eyas.models.PRecommend;
+import com.eyas.models.SRecommend;
+import com.eyas.models.TRecommend;
+import com.eyas.utils.ID;
+import com.eyas.utils.ParaUtils;
+import com.jfinal.plugin.activerecord.Db;
+import com.jfinal.plugin.activerecord.Record;
+
+public class RecommendController extends BaseController {
+
+	@Override
+	protected void setPath() {
+		setPath("/views/recommend/");
+	}
+	
+	public void projectManage(){
+		StringBuffer from = new StringBuffer();
+		from.append("from project_recommend_table pr left join batch b on pr.batch_id=b.batch_id left join project_apply p on pr.project_id=p.project_id where 1=1 ");
+		List<String> params = new ArrayList<String>();
+		if (!ParaUtils.addParam("batchId", params, this)) {
+			from.append(" and pr.batch_id = ? ");
+		}
+		if (!ParaUtils.addLikeParam("keyWord", params, this)) {
+			from.append(" and p.project_name like ? ");
+		}
+		//submit_status=8, project_status=3, is_publish=1	keyWord
+//		if (!ParaUtils.addParam("batchId", params, this)) {
+//			from.append(" and pr.batch_id = ? ");
+//		}
+		from.append("order by pr.rec_date desc");
+		List<Record> list=pages("select pr.batch_id, b.batch_name, pr.project_id, p.project_name, pr.status, pr.audit_date ", from.toString(), params.toArray());
+		List<Record> batchList=Db.find("select * from batch");
+		setAttr("batchList", batchList);
+		render(view("projectManage.jsp"));
+	}
+	
+	/**
+	 * 查询出待选项目信息，跳转至添加页面
+	 */
+	public void addP(){
+		StringBuffer from = new StringBuffer();
+		from.append("select batch_id, project_id, project_name, user_id ");
+		from.append("from project_apply where 1=1 and submit_status=8 and project_status=3 and is_publish=1 ");
+		List<Record> list=Db.find(from.toString());
+		setAttr("listP", list);
+		render(view("addProRe.jsp"));
+	}
+	
+	public void getTeachers(){
+		String project_id = getAttr("project_id");
+		//项目表中的导师
+		Record tutorRecord=Db.findFirst("select u.user_id, u.name, u.mobile, u.teach_course from project_apply pa left join users u on pa.user_id=u.user_id where pa.project_id = ?", project_id);
+		//组队表中的中师  where t.team_status=4
+		Record teacherRecord=Db.findFirst("select u.user_id, u.name, u.mobile, u.teach_course from team_table tt left join users u on tt.user_id=u.user_id where tt.project_id = ?", project_id);
+		List<Record> teacherlist =new ArrayList<Record>();
+		teacherlist.add(tutorRecord);
+		teacherlist.add(teacherRecord);
+		for(Record r:teacherlist){
+			System.out.println(r);
+		}
+		setAttr("teacherList", teacherlist);
+		renderJson();
+	}	
+	
+	/**
+	 * 新增操作，tx事务
+	 */
+	public void txAddProject(){
+		if (SAVE.equals(getFlag())) {
+			PRecommend p = new PRecommend();
+			p.set("batch_id", getPara("batch_id"));
+			p.set("project_id", getPara("project_id"));
+			p.set("assign", getPara("assign"));
+			p.set("achievement", getPara("achievement"));
+			p.set("description", getPara("description"));
+			p.set("rec_date", new Date());
+			p.set("status", 0);
+			p.save();
+			msgOperateSuccess();
+			projectManage();
+		}
+	}
+	
+	public void editP(){
+		String project_id=getPara("project_id");
+		setAttr("project", Db.findFirst("select pr.batch_id, pr.project_id, pa.project_name, pr.assign, pr.achievement, pr.description, pr.rec_date, pr.status from project_recommend_table pr left join project_apply pa on pr.project_id=pa.project_id where pr.project_id = ?",project_id));
+		render(view("editProRe.jsp"));
+	}
+	
+	public void txEditProject(){
+		if (SAVE.equals(getFlag())) {
+			int i=Db.update("update project_recommend_table set assign=?, achievement=?, description=?, rec_date=? where project_id=? and batch_id ", getPara("assign"),getPara("achievement"),getPara("description"),new Date(),getPara("project_id"),getPara("batch_id"));
+			msgOperateSuccess();
+			projectManage();
+		}
+	}
+	
+	public void txDelProject(){
+		try {
+			Db.update("delete from project_recommend_table where project_id=? and batch_id=? ",getPara("project_id"),getPara("batch_id"));
+			ParaUtils.addMsg(this, "删除成功");
+		} catch (Exception e) {
+			ParaUtils.addMsg(this, "删除操作失败！");
+		}
+		projectManage();
+	}
+
+//--------------------------------
+	/**
+	 * 学生管理界面
+	 */
+	public void studentManage(){
+		StringBuffer from = new StringBuffer();
+		from.append("from students_recommend_table sr ");
+		from.append("left join students_apply_table sa on sr.student_id=sa.user_id ");
+		from.append("left join batch b on sr.batch_id=b.batch_id  ");
+		from.append("left join project_apply pa on sa.project_id=pa.project_id ");
+		from.append("left join (select u.user_id,u.name,s.school_name,g.grade_name,c.class_name from users u left join schools s on u.school_id=s.school_id "
+				+ "left join grade g on u.grade_id=g.grade_id left join class c on u.class_id=c.class_id) us on sr.student_id=us.user_id where 1=1 ");
+		List<String> params = new ArrayList<String>();
+		if (!ParaUtils.addParam("batchId", params, this)) {
+			from.append(" and sr.batch_id = ? ");
+		}
+		if (!ParaUtils.addLikeParam("keyWord", params, this)) {
+			from.append(" and us.name like ? ");
+		}
+		from.append(" order by sr.rec_date desc");
+		List<Record> list=pages("select sr.batch_id,b.batch_name,sa.project_id,pa.project_name,sr.student_id,us.name,us.school_name,us.grade_name,us.class_name,sr.status ", from.toString(), params.toArray());
+		List<Record> batchList=Db.find("select * from batch");
+		setAttr("batchList", batchList);
+		render(view("studentManage.jsp"));
+	}
+	
+	public void addS(){
+		StringBuffer from = new StringBuffer();
+		from.append("select batch_id, project_id, project_name, user_id ");
+		from.append("from project_apply where 1=1 and submit_status=8 and project_status=3 and is_publish=1 ");
+		List<Record> list=Db.find(from.toString());
+		setAttr("listP", list);
+		render(view("addStuRe.jsp"));
+	}
+	
+	public void getStuTeachers(){
+		String project_id = getAttr("project_id");
+		//项目表中的导师
+		Record tutorRecord=Db.findFirst("select u.user_id, u.name, u.mobile, u.teach_course from project_apply pa left join users u on pa.user_id=u.user_id where pa.project_id = ?", project_id);
+		//组队表中的中师  where t.team_status=4
+		Record teacherRecord=Db.findFirst("select u.user_id, u.name, u.mobile, u.teach_course from team_table tt left join users u on tt.user_id=u.user_id where tt.project_id = ?", project_id);
+		List<Record> teacherlist =new ArrayList<Record>();
+		teacherlist.add(tutorRecord);
+		teacherlist.add(teacherRecord);
+		for(Record r:teacherlist){
+			System.out.println(r);
+		}
+		setAttr("teacherList", teacherlist);
+		renderJson();
+	}
+	
+	/**
+	 * 
+	 * 返回一个listS学生列表供第二个下拉框选择
+	 */
+	public void getListS(){
+		List<Record> listStudents=Db.find("select t.user_id, u.name, t.batch_id from (select td.user_id, tt.batch_id from team_table tt left join team_detail_table td on tt.team_id=td.team_id where project_id = ? ) t left join users u on t.user_id=u.user_id ", getAttr("project_id"));
+		setAttr("listStudents", listStudents);
+		for(Record r:listStudents){
+			System.out.println(r);
+		}
+		renderJson();
+	}
+	
+	/**
+	 * 
+	 * 选择学生后根据user_id，ajax添加信息
+	 */
+	public void getStudents(){
+		StringBuffer from = new StringBuffer();
+		from.append("select u.name, s.school_name, g.grade_name, c.class_name from users u left join schools s on u.school_id=s.school_id ");
+		from.append("left join grade g on u.grade_id=g.grade_id left join class c on u.class_id=c.class_id ");
+		Record stuMessage=Db.findFirst(from.toString());
+		setAttr("stuMessage", stuMessage);
+		renderJson();
+	}
+	
+	public void txAddStudent(){
+		if (SAVE.equals(getFlag())) {
+			SRecommend s = new SRecommend();
+			s.set("batch_id", getPara("batch_id"));
+			s.set("student_id", getPara("student_id"));
+			s.set("achievement", getPara("achievement"));
+			s.set("description", getPara("description"));
+			s.set("rec_date", new Date());
+			s.set("status", 0);
+			s.save();
+			msgOperateSuccess();
+			studentManage();
+		}
+	}
+	
+	/**
+	 * 跳转方法
+	 */
+	public void editS(){
+		setAttr("studentM", Db.findFirst("select sr.batch_id, sr.student_id, u.name, sr.achievement, sr.description from students_recommend_table sr left join users u on sr.student_id=u.user_id where student_id = ? and batch_id= ? ", getAttr("student_id"),getAttr("batch_id")));
+		setAttr("projectM", Db.findFirst("select project_id, project_name from project_apply where project_id = ? ", getAttr("project_id")));
+		render(view("editStuRe.jsp"));
+	}
+	
+	public void txEditStudent(){
+		if (SAVE.equals(getFlag())) {
+			int i=Db.update("update students_recommend_table set achievement=?, description=?, rec_date=? where student_id=? and batch_id = ?", getPara("achievement"),getPara("description"),new Date(),getPara("student_id"),getPara("batch_id"));
+			msgOperateSuccess();
+			studentManage();
+		}
+	}
+	
+	public void txDelStudent(){
+		try {
+			Db.update("delete from students_recommend_table where student_id=? and batch_id = ? ", getPara("student_id"),getPara("batch_id"));
+			ParaUtils.addMsg(this, "删除成功");
+		} catch (Exception e) {
+			ParaUtils.addMsg(this, "删除操作失败！");
+		}
+		studentManage();
+	}
+	
+	//--------------------------------
+		public void teacherManage(){
+			StringBuffer from = new StringBuffer();
+			from.append("from teachers_recommend_table tr left join users u on tr.teacher_id=u.user_id left join schools s on u.school_id=s.school_id ");
+			from.append("left join batch b on tr.batch_id=b.batch_id ");
+			from.append("left join project_apply pa on tr.teacher_id=pa.user_id where 1=1 ");
+			List<String> params = new ArrayList<String>();
+			if (!ParaUtils.addParam("batchId", params, this)) {
+				from.append(" and tr.batch_id = ? ");
+			}
+			if (!ParaUtils.addLikeParam("keyWord", params, this)) {
+				from.append(" and u.name like ? ");
+			}
+			from.append(" order by tr.audit_date desc");
+			List<Record> list=pages("select tr.batch_id, b.batch_name, tr.teacher_id, u.name, s.school_name, tr.t_type, pa.project_id, pa.project_name,tr.audit_date ", from.toString(), params.toArray());
+			List<Record> batchList=Db.find("select * from batch");
+			setAttr("batchList", batchList);
+			render(view("teacherManage.jsp"));
+		}
+		
+		public void addT(){
+			StringBuffer from = new StringBuffer();
+			from.append("select batch_id, project_id, project_name, user_id ");
+			from.append("from project_apply where 1=1 and submit_status=8 and project_status=3 and is_publish=1 ");
+			List<Record> list=Db.find(from.toString());
+			setAttr("listP", list);
+			render(view("addTeaRe.jsp"));
+		}
+		
+		public void getTchTeachers(){
+			String project_id = getAttr("project_id");
+			//项目表中的导师
+			Record tutorRecord=Db.findFirst("select u.user_id, u.name, u.mobile, u.teach_course from project_apply pa left join users u on pa.user_id=u.user_id where pa.project_id = ?", project_id);
+			//组队表中的中师  where t.team_status=4
+			Record teacherRecord=Db.findFirst("select u.user_id, u.name, u.mobile, u.teach_course from team_table tt left join users u on tt.user_id=u.user_id where tt.project_id = ?", project_id);
+			List<Record> teacherlist =new ArrayList<Record>();
+			teacherlist.add(tutorRecord);
+			teacherlist.add(teacherRecord);
+			for(Record r:teacherlist){
+				System.out.println(r);
+			}
+			setAttr("teacherList", teacherlist);
+			renderJson();
+		}
+
+		//根据教师id，得到教师基本信息
+		public void getTeaInfo(){
+			Record teacherM=Db.findFirst("select s.school_name, u.major, u.degree, u.teach_course, u.academic_pos from users u left join schools s on u.school_id=s.school_id where u.user_id = ?", getAttr("teacher_id"));
+			System.out.println(teacherM);
+			setAttr("teacherM", teacherM);
+			renderJson();
+		}
+		
+		public void txAddTeacher(){
+			if (SAVE.equals(getFlag())) {
+				TRecommend t = new TRecommend();
+				t.set("batch_id", getPara("batch_id"));
+				t.set("t_type", getPara("t_type"));
+				t.set("teacher_id", getPara("teacher_id"));
+				t.set("supervise_des", getPara("supervise_des"));
+				t.set("rec_date", new Date());
+				t.set("status", 0);
+				t.save();
+				msgOperateSuccess();
+				teacherManage();
+			}
+		}
+		
+		//未完成
+		public void editT(){
+			StringBuffer from = new StringBuffer();
+			from.append("select tr.batch_id, tr.teacher_id, u.name, tr.supervise_des, tr.t_type ");
+			from.append("from teachers_recommend_table tr left join users u on tr.teacher_id=u.user_id where tr.teacher_id = ? and tr.batch_id= ? ");
+			Record teacherM=Db.findFirst(from.toString(), getAttr("teacher_id"),getAttr("batch_id"));
+			Record projectM=Db.findFirst("select project_id, project_name from project_apply where project_id = ? ", getAttr("project_id"));
+			setAttr("teacherM", teacherM);
+			setAttr("projectM", projectM);
+			System.out.println(teacherM);
+			System.out.println(projectM);
+			render(view("editTeaRe.jsp"));
+		}
+		
+		public void txEditTeacher(){
+			if (SAVE.equals(getFlag())) {
+				int i=Db.update("update teachers_recommend_table set t_type=?, supervise_des=?, rec_date=? where teacher_id=? and batch_id = ?", getPara("t_type"),getPara("supervise_des"),new Date(),getPara("teacher_id"),getPara("batch_id"));
+				msgOperateSuccess();
+				teacherManage();
+			}
+		}
+		
+		public void txDelTeacher(){
+			try {
+				Db.update("delete from teachers_recommend_table where teacher_id=? and batch_id = ?",getPara("teacher_id"),getPara("batch_id"));
+				ParaUtils.addMsg(this, "删除成功");
+			} catch (Exception e) {
+				ParaUtils.addMsg(this, "删除操作失败！");
+			}
+			teacherManage();
+		}
+		
+		public void exaP(){
+			String project_id=getPara("project_id");
+			setAttr("project", Db.findFirst("select pr.batch_id, pr.project_id, pa.project_name, pr.assign, pr.achievement, pr.description, pr.rec_date, pr.status, pr.remark from project_recommend_table pr left join project_apply pa on pr.project_id=pa.project_id where pr.project_id = ?",project_id));
+			render(view("exaProRe.jsp"));
+		}
+		
+		public void txExaProject(){
+			if (SAVE.equals(getFlag())) {
+				int i=Db.update("update project_recommend_table set status=?, audit_date=?, remark=? where project_id=? and batch_id = ?", getPara("status"),new Date(),getPara("remark"),getPara("project_id"),getPara("batch_id"));
+				msgOperateSuccess();
+				projectManage();
+			}
+		}
+
+		public void exaS(){
+			setAttr("studentM", Db.findFirst("select sr.batch_id, sr.student_id, u.name, sr.achievement, sr.description, sr.status, sr.remark from students_recommend_table sr left join users u on sr.student_id=u.user_id where student_id = ? and batch_id= ? ", getAttr("student_id"),getAttr("batch_id")));
+			setAttr("projectM", Db.findFirst("select project_id, project_name from project_apply where project_id = ? ", getAttr("project_id")));
+			render(view("exaStuRe.jsp"));
+		}
+		
+		public void txExaStudent(){
+			if (SAVE.equals(getFlag())) {
+				int i=Db.update("update students_recommend_table set status=?, audit_date=?, remark=? where student_id=? and batch_id = ?", getPara("status"),new Date(),getPara("remark"),getPara("student_id"),getPara("batch_id"));
+				msgOperateSuccess();
+				studentManage();
+			}
+		}
+		
+		public void exaT(){
+			StringBuffer from = new StringBuffer();
+			from.append("select tr.batch_id, tr.teacher_id, u.name, tr.supervise_des, tr.t_type, tr.status, tr.remark ");
+			from.append("from teachers_recommend_table tr left join users u on tr.teacher_id=u.user_id where tr.teacher_id = ? and tr.batch_id= ? ");
+			setAttr("teacherM", Db.findFirst(from.toString(), getAttr("teacher_id"),getAttr("batch_id")));
+			setAttr("projectM", Db.findFirst("select project_id, project_name from project_apply where project_id = ? ", getAttr("project_id")));
+			render(view("exaTeaRe.jsp"));
+		}
+		
+		public void txExaTeacher(){
+			if (SAVE.equals(getFlag())) {
+				int i=Db.update("update teachers_recommend_table set status=?, audit_date=?, remark=? where teacher_id=? and batch_id = ?", getPara("status"),new Date(),getPara("remark"),getPara("teacher_id"),getPara("batch_id"));
+				msgOperateSuccess();
+				teacherManage();
+			}
+		}
+
+}

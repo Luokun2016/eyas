@@ -1,0 +1,5 @@
+#table{width:100%;}
+table thead th{background:#AAA;height:30px;}
+table tbody td{padding:2px;text-overflow:ellipsis; word-break:keep-all; overflow:hidden;}
+.rownumber{background:#AAA;width:10px;padding:2px;}
+input{border:0px;background:#FFF;border-bottom:1px solid #F5A0B0;}

@@ -1,0 +1,262 @@
+package com.eyas.controllers;
+
+
+import java.util.ArrayList;
+import java.util.List;
+
+import org.jfree.util.PublicCloneable;
+import org.junit.experimental.theories.FromDataPoints;
+
+import com.eyas.base.BaseController;
+import com.eyas.base.CONST;
+import com.eyas.models.SchoolRelationship;
+import com.eyas.models.Schools;
+import com.eyas.models.Users;
+import com.eyas.utils.ParaUtils;
+import com.jfinal.plugin.activerecord.Db;
+import com.jfinal.plugin.activerecord.Record;
+import com.sun.org.apache.bcel.internal.generic.Select;
+
+/**
+ * @author MVKK
+ *
+ */
+public class SchoolController extends BaseController {	
+
+	@Override
+	protected void setPath() {
+		// TODO Auto-generated method stub
+		setPath("/views/school/");
+	}
+	
+	/**
+	 * 学校管理--主界面
+	 */
+	public void schoolManage(){
+		
+		String userId = getSessionAttr(CONST.SESSION_USER_ID); // 获得登录用户ID
+		Long role = getModel(Users.class).getBigRole(userId); // 获取用户角色
+		 //0—中学生用户 1—中学教师 2—中学管理员 3—高校教师  4—高校管理员 5—创新学院用户 6—创新学院管理员
+		StringBuffer from = new StringBuffer();
+		List<String> params = new ArrayList<String>();
+		if(role == 6){
+			from.append(" from schools school where 1=1  ");
+		}else {				
+			from.append(" from schools school left join users user on school.school_id = user.school_id "
+					+ "where 1=1  ");
+			from.append(" and user.user_id = "+userId);
+		}		
+		
+		
+		if (!ParaUtils.addLikeParam("school_name", params, this)) {
+			from.append(" and school.school_name like ?");
+		}
+		if (!ParaUtils.addParam("school_type", params, this)) {
+			from.append(" and school.school_type = ?");
+		}
+		from.append(" and school.school_type !=2 ");
+		from.append(" order by school.school_type ");
+		List<Record> list = pages(
+				"select school.school_id, school.school_name, school.school_type, school.manager, school.address, school.phone ",
+				from.toString(), params.toArray());
+		render(view("school_management.jsp"));
+	}
+	
+	/**
+	 * 添加学校--显示
+	 */
+	public void addSchoolView(){
+		render(view("add_school.jsp"));
+	}
+	
+	/**
+	 * 添加学校检查学校名称是否唯一
+	 */
+	public void checkSchoolName(){
+		String schoolName = getAttr("schoolName");
+		Record school = Db.findFirst("select school_name as name from schools where school_name=?",schoolName);
+		String flag ="false";
+		if(school == null){
+			flag = "true";
+		}
+		setAttr("flag", flag);
+		renderJson();
+	}
+	
+	/**
+	 * 添加学校--处理
+	 */
+	public void txAddSchool(){
+		String schoolName = getAttr("schoolName");
+		String schoolType = getAttr("schoolType");
+		Schools school = new Schools();
+		school.set("school_name", schoolName);
+		school.set("school_type", schoolType);
+		school.set("school_status", 0);
+		if(!save(school).equals(-1)){
+			ParaUtils.addMsg(this, "成功添加"+schoolName);
+		}else{
+			ParaUtils.addMsg(this, schoolName+"添加失败");
+		}
+		
+		schoolManage();
+	}
+	
+	/**
+	 * 修改学校--显示
+	 */
+	public void editSchoolView(){
+		String schoolId = getAttr("schoolId");
+		Schools schools = new Schools();
+		Schools list = schools.getSchoolBySid(schoolId);
+		setAttr("school", list);
+		render(view("edit_school.jsp"));
+	}
+	
+	/**
+	 * 修改学校--提交
+	 */
+	public void txEditSchool(){
+		String schoolId = getAttr("schoolId");
+		String schoolName = getAttr("schoolName");
+		String schoolType = getAttr("schoolType");
+		int school_status = 0;
+		String manager = getAttr("manager");
+		String address = getAttr("address");
+		String phone = getAttr("phone");
+		String remark = getAttr("remark");
+		
+		int s =Db.update("update schools set school_name = ? ,school_type = ?, school_status = ?, manager = ?,address = ?, phone =?, remark =? where school_id = ? ", 
+				 schoolName, schoolType, school_status ,manager, address, phone, remark, schoolId );
+		if(s != -1){
+			ParaUtils.addMsg(this, schoolName+"修改成功");
+		}else{
+			ParaUtils.addMsg(this, schoolName+"修改失败");
+		}
+		schoolManage();
+		
+		
+	}
+	
+	/**
+	 * 查看学校--显示
+	 */
+	public void showSchoolView(){
+		String schoolId = getAttr("schoolId");
+		Schools schools = new Schools();
+		Schools list = schools.getSchoolBySid(schoolId);
+		setAttr("school", list);
+		render(view("show_school.jsp"));
+	}
+	
+	/**
+	 * 删除学校--操作
+	 */
+	public void txDeleteSchool(){
+		String schoolId = getAttr("schoolId");
+		
+		Record s1 = Db.findFirst("select * from users where school_id = ?", schoolId);
+		Record s2 = Db.findFirst("select * from school_relationship where school_id = ?", schoolId);
+		Record s3 = Db.findFirst("select * from school_relationship where associate_school_id = ?", schoolId);
+		if((s1 == null || s1.equals(""))&&(s2 == null || s2.equals(""))&&(s3 == null || s3.equals(""))){
+			boolean s = Db.deleteById("schools", "school_id", schoolId);
+			if(s){
+				ParaUtils.addMsg(this, "删除成功");
+			}else{
+				ParaUtils.addMsg(this, "删除失败");
+			}
+		}else{
+			ParaUtils.addMsg(this, "不能删除正在使用的学校");
+		}
+		
+		schoolManage();
+	}
+	
+	/**
+	 * 关联学校--显示
+	 */
+	public void setSchoolRelationshipView(){
+		String schoolId = getAttr("schoolId");
+		Record data = Db.findFirst("select school_name from schools where school_id=?",schoolId);
+		String schoolName = data.getStr("school_name");				
+		
+		setAttr("schoolId", schoolId);
+		setAttr("schoolName", schoolName);	
+		
+		StringBuffer from = new StringBuffer();
+		
+		List<String> params = new ArrayList<String>();
+		from.append("FROM schools school WHERE school_type = 1 ");
+		if (!ParaUtils.addLikeParam("school_name", params, this)) {
+			from.append(" and school.school_name like ?");
+		}		
+		from.append( "AND school_id IN ( SELECT associate_school_id FROM school_relationship"
+				+ " WHERE school_id = '"+schoolId+"'"+")");		
+				
+		from.append(" order by school.school_name ");
+		List<Record> list = pages(
+				"select school.school_id, school.school_name, school.manager, school.address, school.phone ",
+				from.toString(), params.toArray());
+		render(view("school_relationship.jsp"));
+		
+	}
+	
+	/**
+	 * 添加关联学校--显示
+	 */
+	public void addSchoolRelationshipView(){
+		String schoolId = getAttr("schoolId");
+		setAttr("schoolId", schoolId);
+		
+		StringBuffer from = new StringBuffer();		
+		List<String> params = new ArrayList<String>();
+		
+		from.append("FROM schools school WHERE school_type = 1 ");				
+		from.append( "AND school_id NOT IN ( SELECT associate_school_id FROM school_relationship"
+				+ " WHERE school_id = '"+schoolId+"'"+")");					
+		from.append(" order by school.school_name ");
+		List<Record> list = pages(
+				"select school.school_id, school.school_name, school.manager, school.address, school.phone ",
+				from.toString(), params.toArray());
+		render(view("add_school_relationship.jsp"));		
+		
+	}
+	
+	/**
+	 * 添加关联学校--处理
+	 */
+	public void txAddSchoolRelationship(){
+		String schoolId = getAttr("schoolId"); // 高校ID
+		String associateSchoolId = getAttr("associateSchoolId"); // 中学ID
+		
+		SchoolRelationship schoolRelationship = new SchoolRelationship();
+		schoolRelationship.set("school_id", schoolId);
+		schoolRelationship.set("associate_school_id", associateSchoolId);
+		if(!save(schoolRelationship).equals(-1)){
+			ParaUtils.addMsg(this, "关联成功");
+		}else{
+			ParaUtils.addMsg(this, "关联失败");
+		}
+		addSchoolRelationshipView();
+	}
+	
+	/**
+	 * 删除关联关系--操作
+	 */
+	public void txDeleteSchoolRelationship(){
+		String schoolId = getAttr("schoolId"); // 高校ID
+		String associateSchoolId = getAttr("associateSchoolId"); // 中学ID
+		
+		Record s1 = Db.findFirst("select * from users where school_id = ?", associateSchoolId);
+		if((s1 == null || s1.equals(""))){
+			
+			delByWhere("school_relationship","school_id ='"+schoolId+"'"+"and associate_school_id ='"+associateSchoolId+"'" );
+			ParaUtils.addMsg(this, "删除成功");
+		
+		}else{
+			ParaUtils.addMsg(this, "不能删除正在使用的学校");
+		}
+		setSchoolRelationshipView();
+	}	
+	
+}

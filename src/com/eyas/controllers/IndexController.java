@@ -1,0 +1,564 @@
+package com.eyas.controllers;
+
+import java.io.File;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+import org.eclipse.jetty.util.ajax.JSON;
+
+import com.eyas.base.BaseController;
+import com.eyas.base.CONST;
+import com.eyas.models.News;
+import com.eyas.models.Users;
+import com.eyas.utils.CaptchaRender;
+import com.eyas.utils.FileUtils;
+import com.eyas.utils.MD5Util;
+import com.eyas.utils.ParaUtils;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.jfinal.plugin.activerecord.Db;
+import com.jfinal.plugin.activerecord.Record;
+
+public class IndexController extends BaseController {
+	private static final String PAGE_PATH = "/views/index/";
+	private static final String RANDOM_CODE_KEY = "1";  
+
+	@Override
+	protected void setPath() {
+		// TODO Auto-generated method stub
+		setPath("/views/index/");
+	}
+
+	/**
+	 * 用户登录
+	 */
+	public void login() {
+		String userName = getPara("username");
+		String passWord = getPara("password");
+		String inputCode = getPara("inputCode");
+		//最初调用login函数时不做任何处理直接跳转至登录界面
+		if (inputCode == null || "".equals(inputCode.trim())) {
+			//获取新闻列表
+			List<Record> listNews = getNewsList(0);
+			List<Record> listPolicy = getNewsList(1);
+			setAttr("listNews",listNews);
+			setAttr("listPolicy",listPolicy);
+			render(PAGE_PATH + "login.jsp");
+			return;
+		}
+		//检测验证码
+		boolean loginSuccess = CaptchaRender.validate(this, inputCode.toUpperCase(), RANDOM_CODE_KEY);    
+		if (!loginSuccess) {
+			ParaUtils.addMsg(this, "验证码错误！");
+			setAttr("user_name",userName);
+			setAttr("password",passWord);
+			//获取新闻列表
+			List<Record> listNews = getNewsList(0);
+			List<Record> listPolicy = getNewsList(1);
+			setAttr("listNews",listNews);
+			setAttr("listPolicy",listPolicy);
+			render(PAGE_PATH + "login.jsp");
+			return;
+		}
+		// 获取登录用户，密码MD5加密后与数据库中对比		
+		Users u = new Users();
+		u = u.getLoginByUser(userName, MD5Util.convertMD5(passWord));
+		if (u == null) {
+			ParaUtils.addMsg(this, getText("index_login_error"));
+			//获取新闻列表
+			List<Record> listNews = getNewsList(0);
+			List<Record> listPolicy = getNewsList(1);
+			setAttr("listNews",listNews);
+			setAttr("listPolicy",listPolicy);
+			render(PAGE_PATH + "login.jsp");
+			return;
+		} 
+		//检测账号是否审核
+		if(u.getInt("check_status") == 0){
+			ParaUtils.addMsg(this, "该账号尚未通过审核，请联系相关管理员！");
+			setAttr("user_name",userName);
+			//获取新闻列表
+			List<Record> listNews = getNewsList(0);
+			List<Record> listPolicy = getNewsList(1);
+			setAttr("listNews",listNews);
+			setAttr("listPolicy",listPolicy);
+			render(PAGE_PATH + "login.jsp");
+			return;
+		}
+
+		//检测账号是否禁用或删除
+		if(u.getInt("user_status") != 0){
+			ParaUtils.addMsg(this, "该账号已被禁用或删除，请联系相关管理员！");
+			setAttr("user_name",userName);
+			//获取新闻列表
+			List<Record> listNews = getNewsList(0);
+			List<Record> listPolicy = getNewsList(1);
+			setAttr("listNews",listNews);
+			setAttr("listPolicy",listPolicy);
+			render(PAGE_PATH + "login.jsp");
+			return;
+		}
+
+		//检测是否有权限
+		StringBuffer[] permiss = u.getPermissionsById(u.get("user_id")+"");
+		String permission=permiss[0].toString();
+		if (permission == null || permission.length()==0) {
+			ParaUtils.addMsg(this, getText("index_no_right"));
+			//获取新闻列表
+			List<Record> listNews = getNewsList(0);
+			List<Record> listPolicy = getNewsList(1);
+			setAttr("listNews",listNews);
+			setAttr("listPolicy",listPolicy);
+			render(PAGE_PATH + "login.jsp");
+			return;
+		}
+		Map<String, String> pMap = new HashMap<String, String>();
+		String[] pStr = permission.split("%");
+		for (int i = 0; i < pStr.length; i++) {
+			pMap.put(pStr[i], pStr[i]);
+		}
+		setSessionAttr(CONST.RIGHTS, pMap);
+		setSessionAttr(CONST.URL, permiss[1]);
+		Long role=getModel(Users.class).getBigRole(u.get("user_id").toString());
+		//将以后会用到的信息存入session
+		setSessionAttr(CONST.SESSION_USER_ID, u.get("user_id").toString());
+		setSessionAttr(CONST.SESSION_USER_NAME, u.getStr("user_name"));
+		setSessionAttr(CONST.SESSION_NAME, u.getStr("name"));
+		setSessionAttr(CONST.SESSION_BIGROLE, role);
+		setSessionAttr(CONST.SESSION_SCHOOL_ID, u.get("school_id").toString());
+		redirect("index");
+	}
+
+	/**
+	 * 学生注册--显示
+	 */
+	public void studentRegiste(){
+		List<Record> school = Db.find("select * from schools where school_type = 1");
+		setAttr("schoolList", school);
+		render(PAGE_PATH + "student_registe.jsp");
+	}
+
+	/**
+	 * 中学教师注册--显示
+	 */
+	public void midTeacherRegiste(){
+		List<Record> school = Db.find("select * from schools where school_type = 1");
+		setAttr("schoolList", school);
+		render(PAGE_PATH + "mid_teacher_registe.jsp");
+	}
+
+	/**
+	 * 大学教师注册--显示
+	 */
+	public void collegeTeacherRegiste(){
+		List<Record> school = Db.find("select * from schools where school_type = 0");
+		setAttr("schoolList", school);
+		render(PAGE_PATH + "college_teacher_registe.jsp");
+	}
+
+	/**
+	 * 注册动态加载年级
+	 */
+	public void getGrade(){
+		String schoolId = getAttr("schoolId");
+		List<Record> gradeList = Db.find("select * from grade where school_id = ?", schoolId);
+		setAttr("gradeList", gradeList);
+		renderJson();
+	}
+
+	/**
+	 * 注册动态加载班级
+	 */
+	public void getClasss(){
+		String gradeId = getAttr("gradeId");
+		List<Record> classList = Db.find("select * from class where grade_id = ?", gradeId);
+		setAttr("classList", classList);
+		renderJson();
+	}
+
+	/**
+	 * 注册检测用户是否存在
+	 */
+	public void checkName(){
+		String name = getAttr("userName");
+		Record user = Db.findFirst("select user_name as name from users where user_name=?",name);
+		String flag ="false";
+		if(user == null){
+			flag = "true";
+		}
+		setAttr("flag", flag);
+		renderJson();
+	}
+
+	public Map<String,Object>  checkName( String name,String param, HttpServletRequest request){ 		
+		Map<String,Object> map=new HashMap<String,Object>();  
+		Record user = Db.findFirst("select user_name as name from users where user_name=?",param);
+		if(user != null){  
+			map.put("status", "n");  
+			map.put("info","账号已经存在！" );  
+		}else{  
+			map.put("status", "y");  
+			map.put("info", "账号可以使用！");  
+		}  
+		return  map;  
+	}  
+
+	/**
+	 * 注册检测身份证号是否存在
+	 */
+	public void checkCertificate(){
+		String certificate = getAttr("certificate");
+		Record user = Db.findFirst("select certification from users where certification=?",certificate);
+		String flag ="false";
+		if(user == null){
+			flag = "true";
+		}
+		setAttr("flag", flag);
+		renderJson();
+	}
+
+	/**
+	 * 注册检测电话号码是否存在
+	 */
+	public void checkPhone(){
+		String mobile = getAttr("mobile");
+		Record user = Db.findFirst("select mobile from users where mobile=?",mobile);
+		String flag ="false";
+		if(user == null){
+			flag = "true";
+		}
+		setAttr("flag", flag);
+		renderJson();
+	}
+
+	/**
+	 * 注册检测邮箱是否存在
+	 */
+	public void checkEmail(){
+		String email = getAttr("email");
+		Record user = Db.findFirst("select email from users where email=?",email);
+		String flag ="false";
+		if(user == null){
+			flag = "true";
+		}
+		setAttr("flag", flag);
+		renderJson();
+	}
+
+
+	/**
+	 * 用户注册--处理
+	 */
+	public void txUserRegiste(){
+		String passWord = getPara("password");
+		Users user = new Users();
+		user.set("pass_word", MD5Util.convertMD5(passWord));
+		user.set("user_status", 1);
+		user.set("check_status", 0);
+
+		save(user);
+		ParaUtils.addMsg(this, "注册成功");	
+		login();
+	}
+	
+	/**
+	 * 修改用户个人信息--显示
+	 */
+	public void userEdit(){
+		String user_id = getSessionAttr(CONST.SESSION_USER_ID);
+		String school_id = getSessionAttr(CONST.SESSION_SCHOOL_ID);
+		Long bigRole = getSessionAttr(CONST.SESSION_BIGROLE);
+		Users userInfo = getModel(Users.class).getUserByUserId(user_id);
+		int userType=userInfo.getInt("user_type");
+		if(bigRole == 6){
+			List<Record> schoolInfo = Db.find("select schools.school_name,schools.school_id from schools");
+			setAttr("schoolInfo", schoolInfo);
+		}else{
+			List<Record> schoolInfo = Db.find("select schools.school_name,schools.school_id from schools left join users on users.school_id=schools.school_id where users.user_id = ?", user_id);
+			setAttr("schoolInfo", schoolInfo);
+		}
+		setAttr("school_id", school_id);
+		List<Record> gradeList = Db.find("select grade_id,grade_name from grade where school_id=?",userInfo.get("school_id"));
+		List<Record> classList = Db.find("select class_id,class_name from class where grade_id=?",userInfo.get("grade_id"));
+		setAttr("userInfo", userInfo);
+		setAttr("user_role", bigRole);
+		setAttr("gradeList", gradeList);
+		setAttr("classList", classList);
+		if(userType==0)
+			render(view("edit_junior_student.jsp"));
+		else if(userType==1)
+			render(view("edit_junior_teacher.jsp"));
+		else if(userType==2)
+			render(view("edit_admin.jsp"));
+		else if(userType==3)
+			render(view("edit_college_teacher.jsp"));
+		else
+			render(view("edit_admin.jsp"));
+	}
+
+	/**
+	 * 修改用户个人信息
+	 */
+	public void txUpdateUser(){
+		Db.update("update users set name=?,sex=?,age=?,grade_id=?,class_id=?,"
+				+ "degree=?,academic_pos=?,position=?,certification=?,mobile=?,"
+				+ "qq=?,wechat=?,major=?,teach_course=?,research_field=?,introduction=?,"
+				+ "school_id=?,depart=?,email=? where user_name=?",getAttr("name"),getAttr("sex"),getAttr("age"),getAttr("grade_id"),
+				getAttr("class_id"),getAttr("degree"),getAttr("academic_pos"),getAttr("position"),getAttr("certification"),getAttr("mobile"),
+				getAttr("qq"),getAttr("wechat"),getAttr("major"),getAttr("teach_course"),getAttr("research_field"),getAttr("introduction"),
+				getAttr("school_id"),getAttr("depart"),getAttr("email"),getAttr("user_name"));
+		ParaUtils.addMsg(this, "修改成功");
+		index();
+	}
+	
+	/**
+	 * 修改检测身份证号是否重复
+	 */
+	public void editCheckCertificate(){
+		String userName = getAttr("userName");
+		String certificate = getAttr("certificate");
+		Record user = Db.findFirst("select certification from users where certification=? and user_name != ?",certificate, userName);
+		String flag ="false";
+		if(user == null){
+			flag = "true";
+		}
+		setAttr("flag", flag);
+		renderJson();
+	}
+	
+	/**
+	 * 修改检测电话号码是否重复
+	 */
+	public void editCheckPhone(){
+		String userName = getAttr("userName");
+		String mobile = getAttr("mobile");
+		Record user = Db.findFirst("select mobile from users where mobile=? and user_name != ?",mobile, userName);
+		String flag ="false";
+		if(user == null){
+			flag = "true";
+		}
+		setAttr("flag", flag);
+		renderJson();
+	}
+	
+	/**
+	 * 修改检测邮箱是否重复
+	 */
+	public void editCheckEmail(){
+		String userName = getAttr("userName");
+		String email = getAttr("email");
+		Record user = Db.findFirst("select email from users where email=? and user_name != ?",email, userName);
+		String flag ="false";
+		if(user == null){
+			flag = "true";
+		}
+		setAttr("flag", flag);
+		renderJson();
+	}
+
+	
+	/**
+	 * 首页
+	 */
+	public void index() {
+		render(PAGE_PATH + "index.jsp");
+	}
+	/**
+	 * 首页头部菜单栏
+	 */
+	public void header() {
+		render(PAGE_PATH + "head.jsp");
+	}
+	/**
+	 * 关于
+	 */
+	public void about() {
+		render(PAGE_PATH + "about.jsp");
+	}
+	/**
+	 * 首页左侧菜单栏
+	 */
+	public void menu() {
+		String flag = getPara("f");
+		setAttr("m", flag);
+		if (flag == null) {
+			// 默认
+			setAttr("m", "base");
+		}
+		render(PAGE_PATH + "menu.jsp");
+	}
+
+	/**
+	 * 首页右下侧主内容
+	 */
+	@SuppressWarnings("deprecation")
+	public void body() {
+		//获取新闻列表
+		List<Record> listNews = Db.find("select * from news where news_type_id =0 order by publish_time desc limit 15");
+		List<Record> listPolicy =Db.find("select * from news where news_type_id =1 order by publish_time desc limit 15");
+		setAttr("listNews",listNews);
+		setAttr("listPolicy",listPolicy);
+		render(PAGE_PATH + "body.jsp");
+	}
+
+	/**
+	 * 生成验证码图片
+	 */
+	public void img() {  
+		CaptchaRender img = new CaptchaRender(RANDOM_CODE_KEY);  
+		render(img);  
+	}  
+	/**
+	 * 退出登录
+	 */
+	public void logout() {
+		getSession().invalidate();
+		// 标准路径
+		String path = getRequest().getContextPath();
+		String basePath = getRequest().getScheme() + "://" + getRequest().getServerName() + ":"
+				+ getRequest().getServerPort() + path + "/";
+		setSessionAttr(CONST.SESSION_BASE_PATH, basePath);
+		login();
+	}
+
+	/**
+	 * 通过HttpServletRequest返回IP地址
+	 * 
+	 * @param request
+	 *            HttpServletRequest
+	 * @return ip String
+	 * @throws Exception
+	 */
+	public String getIpAddr(HttpServletRequest request) throws Exception {
+		String ip = request.getHeader("x-forwarded-for");
+		if (ip == null || ip.length() == 0 || "unknown".equalsIgnoreCase(ip)) {
+			ip = request.getHeader("Proxy-Client-IP");
+		}
+		if (ip == null || ip.length() == 0 || "unknown".equalsIgnoreCase(ip)) {
+			ip = request.getHeader("WL-Proxy-Client-IP");
+		}
+		if (ip == null || ip.length() == 0 || "unknown".equalsIgnoreCase(ip)) {
+			ip = request.getHeader("HTTP_CLIENT_IP");
+		}
+		if (ip == null || ip.length() == 0 || "unknown".equalsIgnoreCase(ip)) {
+			ip = request.getHeader("HTTP_X_FORWARDED_FOR");
+		}
+		if (ip == null || ip.length() == 0 || "unknown".equalsIgnoreCase(ip)) {
+			ip = request.getRemoteAddr();
+		}
+		return ip;
+	}
+
+	/**
+	 * 修改个人密码
+	 */
+	public void txEditPwd() {
+		Users u = new Users();
+		if (UPDATE.equals(getFlag())) {
+			//检查原密码是否正确
+			if(u.getUserById((String)getSessionAttr(CONST.SESSION_USER_ID), MD5Util.convertMD5(MD5Util.string2MD5(getPara("oldcode")))) == null){
+				ParaUtils.addMsg(this, "原密码错误！");
+				setAttr("user_id", getSessionAttr(CONST.SESSION_USER_ID));
+				render(PAGE_PATH + "edit-pwd.jsp");
+				return;
+			}
+			// 将修改后的数据写入数据库
+			String sql = "update users set pass_word = ? where user_id = ?";
+			Db.update(sql, MD5Util.convertMD5(MD5Util.string2MD5(getPara("newcode"))), (String)getSessionAttr(CONST.SESSION_USER_ID));
+			ParaUtils.addMsg(this, "密码修改成功！");
+			body();
+			return;
+		}
+		setAttr("user_id", getSessionAttr(CONST.SESSION_USER_ID));
+		render(PAGE_PATH + "edit-pwd.jsp");
+	}
+
+	public List<Record> getNewsList(int type){
+		return Db.find("select * from news where news_type_id = "+type+" and view_for_guest=1 order by publish_time desc limit 8");
+	}
+
+	//加载新闻的List
+	public void getNewsList(){
+		StringBuffer from =null;
+		if(getSessionAttr(CONST.SESSION_USER_ID)==null||getSessionAttr(CONST.SESSION_USER_ID).equals("")){
+			from = new StringBuffer("from news n where n.news_type_id =0 and view_for_guest=1");
+		}else{
+			from = new StringBuffer("from news n where n.news_type_id =0");
+		}
+		List<String> params = new ArrayList<String>();		
+		from.append(" order by n.publish_time desc");
+		List<Record> list = pages("select n.news_id,n.title,n.publish_time ",from.toString(), params.toArray());
+		if(getSessionAttr(CONST.SESSION_USER_ID)==null||getSessionAttr(CONST.SESSION_USER_ID).equals("")){
+			render(view("newslist.jsp"));
+		}else{
+			render(view("newsBodylist.jsp"));
+		}
+
+	}
+
+	//加载政策的List
+	public void getPolicyList(){
+		StringBuffer from =null;
+		if(getSessionAttr(CONST.SESSION_USER_ID)==null||getSessionAttr(CONST.SESSION_USER_ID).equals("")){
+			from = new StringBuffer("from news n where n.news_type_id =1 and view_for_guest=1");
+		}else{
+			from = new StringBuffer("from news n where n.news_type_id =1");
+		}
+		List<String> params = new ArrayList<String>();		
+		from.append(" order by n.publish_time desc");
+		List<Record> list = pages("select n.news_id,n.title,n.publish_time ",from.toString(), params.toArray());
+		if(getSessionAttr(CONST.SESSION_USER_ID)==null||getSessionAttr(CONST.SESSION_USER_ID).equals("")){
+			render(view("policylist.jsp"));
+		}else{
+			render(view("policyBodylist.jsp"));
+		}
+
+	}
+
+	//加载某一个新闻或者公告
+	public void getNews(){
+		News news=getModel(News.class).findById(getAttr("news_id"));
+		List<Record> fileList=Db.find("select * from attach_file where news_id=?",getAttr("news_id"));
+		if(getSessionAttr(CONST.SESSION_USER_ID)==null||getSessionAttr(CONST.SESSION_USER_ID).equals("")){
+			int states=news.getInt("view_for_guest");
+			if(states==1){
+				setAttr("news",news);
+				setAttr("fileList",fileList);
+			}else{
+				setAttr("news",new News());
+				setAttr("fileList",fileList);
+			}
+			render(view("news_detail.jsp"));
+		}else{
+			String flag=getPara("flag");
+			if(flag.equals("0")){
+				setAttr("urlBack","index/body");
+			}else if(flag.equals("1")){
+				setAttr("urlBack","index/getNewsList");
+			}else{
+				setAttr("urlBack","index/getPolicyList");
+			}
+			setAttr("news",news);
+			setAttr("fileList",fileList);
+			render(view("news_body_detail.jsp"));
+		}
+	}
+
+	public void downLoad() {
+		String docId = getPara("attach_file");
+		try {
+			File f = new File(FileUtils.getWebInfPath() +CONST.NEWS_PATH+docId);
+			if(!f.isFile()){
+				msgOperateError();
+			}
+			else renderFile(f);
+		} catch (Exception e) {
+			msgOperateError();
+		}
+	}
+
+}

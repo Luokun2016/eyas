@@ -1,0 +1,565 @@
+package com.eyas.controllers;
+
+import java.io.File;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+
+import com.eyas.base.BaseController;
+import com.eyas.base.CONST;
+import com.eyas.models.Batch;
+import com.eyas.models.LearnRecord;
+import com.eyas.models.ProjectApply;
+import com.eyas.models.TrainingPlanMain;
+import com.eyas.models.Users;
+import com.eyas.utils.FileUtils;
+import com.eyas.utils.ParaUtils;
+import com.jfinal.plugin.activerecord.Db;
+import com.jfinal.plugin.activerecord.Record;
+import com.jfinal.upload.UploadFile;
+
+/**
+ * @author MVKK
+ *
+ */
+/**
+ * @author MVKK
+ *
+ */
+public class RecordController extends BaseController {
+
+	@Override
+	protected void setPath() {
+		// TODO Auto-generated method stub
+		setPath("/views/record/");
+	}
+
+	/**
+	 * 学习记录维护(中学生使用)
+	 */
+	public void maintain() {
+		String userId = getSessionAttr(CONST.SESSION_USER_ID); // 获得登录用户ID
+		// 获取学生参与的当前批次
+		List batchList = Db
+				.find("select b.batch_id,b.batch_name from batch b where b.batch_id in (select batch_id from learning_record_table lr where lr.user_id ='"
+						+ userId + "') or b.batch_status=1 order by b.batch_status desc,b.batch_id desc");
+		// 获取学生参与的项目
+		List projectList = Db
+				.find("select project_id,project_name from project_apply where project_id in (select project_id from learning_record_table lr where lr.user_id ='"
+						+ userId + "')");
+
+		// 获取记录类别
+		List<Record> recordType = Db.find(
+				"select * from learning_record_type_table where l_record_type_id in (select l_record_type_id from learning_record_table where user_id =? )",
+				userId);
+		setAttr("recordTypeList", recordType);
+
+		StringBuffer from = new StringBuffer();
+		from.append(" from learning_record_table lr left join batch on lr.batch_id = batch.batch_id " // batch批次表
+				+ " left join project_apply pa on lr.project_id = pa.project_id " // pa项目表
+				+ " left join subject_category sc on pa.subject_cat_id = sc.subject_cat_id " // sc学科表
+				+ " left join learning_record_type_table lrt on lr.l_record_type_id = lrt.l_record_type_id "); // lrt记录类别表
+		from.append(" where lr.user_id = '" + userId + "' ");
+		List<String> params = new ArrayList<String>();
+		if (!ParaUtils.addParam("batchId", params, this)) {
+			from.append(" and lr.batch_id = ?");
+		}
+		if (!ParaUtils.addParam("projectId", params, this)) {
+			from.append(" and pa.project_id = ?");
+		}
+		if (!ParaUtils.addParam("recordTypeId", params, this)) {
+			from.append(" and lr.l_record_type_id = ?");
+		}
+		// 默认加载当前批次的学习记录,如果当前没有批次，则加载所有批次的学习记录
+		if (getAttr("batchId") == null || getAttr("batchId").equals("")) {
+			Batch batch = getModel(Batch.class).getCurBatch();
+			if (batch != null) {
+				from.append(" and lr.batch_id =" + batch.get("batch_id"));
+				List projectNowList = Db
+						.find("select project_id,project_name from project_apply where project_id in (select t.project_id from team_detail_table td left join team_table t on t.team_id = td.team_id where td.user_id ='"
+								+ userId + "' and t.batch_id='" + batch.get("batch_id") + "')");
+				setAttr("projectNowList", projectNowList);
+				setAttr("batchId", batch.get("batch_id"));
+			} else {
+				setAttr("projectNowList", null);
+				setAttr("batchId", -1);
+			}
+		}
+		setAttr("batchList", batchList);
+		setAttr("projectList", projectList);
+		from.append(" order by lr.upload_time desc");
+		List<Record> list = pages(
+				" select batch.batch_name, pa.project_name, sc.subject_name, lr.l_record_name, lrt.l_record_type, lr.upload_time,lr.status,lr.l_record_id",
+				from.toString(), params.toArray());
+
+		render(view("maintain.jsp"));
+	}
+
+	/**
+	 * 新增学习记录检查 若当前批次下该项目状态为已结题或当前时间>=该项目的记录提交截止时间 不能添加学习记录 如果学习记录提交次数>=计划提交次数
+	 * 不能添加学习记录
+	 */
+	public void checkAddRecord() {
+		String userId = getSessionAttr(CONST.SESSION_USER_ID); // 获得登录用户ID
+		String projectId = getAttr("projectId");
+		String flag = "false";
+		String flag1 = "false";
+		ProjectApply projectApply = getModel(ProjectApply.class).findById(projectId);
+		if (!projectApply.get("project_status").equals("9")) {
+			TrainingPlanMain tPlanMain = getModel(TrainingPlanMain.class).findFirst("select * from training_plan_main_table where project_id=?",projectId);
+			Date date = tPlanMain.getTimestamp("l_record_date"); // 项目学习记录提交截止时间
+			int counts = tPlanMain.getInt("l_record_time"); // 项目学习记录提交次数
+			if (date.after(new Date())) {
+				flag = "true";
+			}
+			List<Record> count = Db.find(
+					"select l_record_id from learning_record_table where project_id = ? and user_id = ?", projectId,
+					userId);
+			if (count.size() < counts) {
+				flag1 = "true";
+			}
+		}
+
+		setAttr("flag", flag);
+		setAttr("flag1", flag1);
+		renderJson();
+	}
+
+	/**
+	 * tx开头的方法，加入事务 添加新的学习记录，获取培养计划
+	 */
+	public void txAddInitialize() {
+		String projectId = getAttr("projectNowId");
+		ProjectApply projectApply = getModel(ProjectApply.class).findById(projectId);
+		setAttr("projectApply", projectApply);
+		List<Record> recordTypeList = Db.find("select * from learning_record_type_table");
+		setAttr("recordTypeList", recordTypeList);
+		render(view("add_record_view.jsp"));
+	}
+
+	/**
+	 * 新增学习记录--保存数据
+	 */
+	public void txAddRecord() {
+		String userId = getSessionAttr(CONST.SESSION_USER_ID); // 获得登录用户ID
+
+		LearnRecord lRecord = new LearnRecord();
+		lRecord.set("user_id", userId);
+		lRecord.set("status", 0); // 评阅状态0：未评
+		// 获取附件信息
+		String[] attach_files = getParaValues("attach_file");
+		if (attach_files != null && attach_files.length >= 1) {
+			lRecord.set("l_record_path", attach_files[0]);
+		}
+		if (!save(lRecord).equals(-1)) {
+			ParaUtils.addMsg(this, "新增成功！");
+		} else {
+			ParaUtils.addMsg(this, "新增失败！");
+		}
+
+		maintain();
+	}
+
+	/**
+	 * 学生查看学习记录
+	 */
+	public void learnRecordView() {
+		String recordId = getAttr("recordId");
+		LearnRecord learnRecord = new LearnRecord();
+		LearnRecord lRecord = learnRecord.getLearnRecordById(recordId);
+		Record lRecordType = Db.findFirst("select * from learning_record_type_table where l_record_type_id=?", lRecord.get("l_record_type_id"));
+		setAttr("learnRecord", lRecord);
+		setAttr("lRecordType", lRecordType);
+		render(view("learn_record_view.jsp"));
+	}
+
+	/**
+	 * 修改学习记录--显示
+	 */
+	public void editLearnRecordView() {
+		String recordId = getAttr("recordId");
+		LearnRecord learnRecord = new LearnRecord();
+		LearnRecord lRecord = learnRecord.getLearnRecordById(recordId);
+		setAttr("learnRecord", lRecord);
+		TrainingPlanMain tPlanMain = getModel(TrainingPlanMain.class).findFirst("select * from training_plan_main_table where project_id=?",lRecord.get("project_id"));
+		Date date = tPlanMain.getTimestamp("l_record_date"); // 项目学习记录提交截止时间
+		int status = lRecord.getInt("status");
+		if (date.before(new Date())||status==1) {
+			ParaUtils.addMsg(this, "该学习记录不能修改！");
+			maintain();
+		}else{
+			List<Record> recordTypeList = Db.find("select * from learning_record_type_table");
+			setAttr("recordTypeList", recordTypeList);
+			render(view("edit_learn_record_view.jsp"));
+		}
+	}
+
+	/**
+	 * 修改学习记录--保存
+	 */
+	public void txEditRecord() {
+		LearnRecord lRecord = new LearnRecord();
+		// 获取附件信息
+		String[] attach_files = getParaValues("attach_file");
+		if (attach_files != null && attach_files.length >= 1) {
+			lRecord.set("l_record_path", attach_files[0]);
+		}
+		if (!update(lRecord).equals(-1)) {
+			ParaUtils.addMsg(this, "修改成功！");
+		} else {
+			ParaUtils.addMsg(this, "修改失败！");
+		}
+
+		maintain();
+	}
+
+	/**
+	 * 学生删除学习记录
+	 */
+	public void txDeleteLearnRecord() {
+		String recordId = getAttr("recordId");
+		LearnRecord learnRecord = new LearnRecord();
+		LearnRecord lRecord = learnRecord.getLearnRecordById(recordId);
+		int status = lRecord.getInt("status");
+		if (status==1) {
+			ParaUtils.addMsg(this, "该学习记录不能删除！");
+			maintain();
+		}else{
+			if (Db.deleteById("learning_record_table", "l_record_id", recordId)) {
+				ParaUtils.addMsg(this, "删除成功！");
+			} else {
+				ParaUtils.addMsg(this, "删除失败！");
+			}
+			maintain();
+		}
+	}
+
+	/**
+	 * 学习记录评阅(大学教师使用)--显示记录
+	 */
+	public void review() {
+		String userId = getSessionAttr(CONST.SESSION_USER_ID); // 获得登录用户ID
+		String schoolId = getSessionAttr(CONST.SESSION_SCHOOL_ID); // 获得登录用户学校
+		// 0—中学生用户、1—中学教师 2—中学管理员 3—高校教师 4—高校管理员 5—创新学院用户 6—创新学院管理员
+		Long role = getModel(Users.class).getBigRole(userId); // 获取用户角色
+		if (role == 3) {
+			List batchList = Db
+					.find("select b.batch_id,b.batch_name from batch b where b.batch_id in (select lr.batch_id from learning_record_table lr left join "
+							+ "project_apply pa on lr.project_id=pa.project_id where pa.user_id ="
+							+ userId
+							+ " ) or b.batch_status=1 order by b.batch_status desc,b.batch_id desc");
+			List projectList = Db.find("select project_id,project_name from project_apply where project_id in(select lr.project_id from learning_record_table lr left join "
+							+ "project_apply pa on lr.project_id=pa.project_id where pa.user_id ='"
+							+ userId
+							+ "')");
+			// 获取记录类别
+			List<Record> recordType = Db
+					.find("select * from learning_record_type_table where l_record_type_id in (select l_record_type_id from learning_record_table lr left join "
+							+ "project_apply pa on lr.project_id=pa.project_id where pa.user_id ='"
+							+ userId
+							+ "')");
+			// 获取中学学校
+			List<Record> middleSchool = Db
+					.find("select * from schools where school_id in (select u.school_id from learning_record_table lr left join users u on lr.user_id=u.user_id)");
+
+			setAttr("recordTypeList", recordType);
+			setAttr("batchList", batchList);
+			setAttr("projectList", projectList);
+			setAttr("middleSchool", middleSchool);
+
+			StringBuffer from = new StringBuffer();
+			from.append(" from learning_record_table lr left join batch on lr.batch_id = batch.batch_id " // batch批次表
+					+ " left join users student on lr.user_id = student.user_id " // student学生表
+					+ " left join schools on student.school_id = schools.school_id " // schools中学表
+					+ " left join project_apply pa on lr.project_id = pa.project_id " // pa项目表
+					+ " left join learning_record_type_table lrt on lr.l_record_type_id = lrt.l_record_type_id "); // lrt记录类别表
+			from.append(" where pa.user_id = '" + userId + "' ");
+			List<String> params = new ArrayList<String>();
+			if (!ParaUtils.addParam("batchId", params, this)) {
+				from.append(" and lr.batch_id = ?");
+			}
+			if (!ParaUtils.addParam("projectId", params, this)) {
+				from.append(" and pa.project_id = ?");
+			}
+			if (!ParaUtils.addParam("recordTypeId", params, this)) {
+				from.append(" and lr.l_record_type_id = ?");
+			}
+			if (!ParaUtils.addParam("middleSchoolId", params, this)) {
+				from.append(" and student.school_id = ?");
+			}
+			if (!ParaUtils.addParam("reviewstatus", params, this)) {
+				from.append(" and lr.status = ?");
+			}
+			if (!ParaUtils.addLikeParam("studentName", params, this)) {
+				from.append(" and student.name like ?");
+			}
+			// 默认加载当前批次的学习记录,如果当前没有批次，则加载所有批次的学习记录
+			if (getAttr("batchId") == null || getAttr("batchId").equals("")) {
+				Batch batch = getModel(Batch.class).getCurBatch();
+				if (batch != null) {
+					from.append(" and lr.batch_id =" + batch.get("batch_id"));
+					setAttr("batchId", batch.get("batch_id"));
+				} else {
+					setAttr("batchId", -1);
+				}
+			}
+			from.append(" order by lr.review_date desc");
+			List<Record> list = pages(
+					" select batch.batch_name, pa.project_name, student.name,schools.school_name, lr.l_record_name, lrt.l_record_type, lr.status, lr.review_date,lr.l_record_id",
+					from.toString(), params.toArray());
+
+			render(view("review.jsp"));
+		} else {
+			render("/views/index/norights.jsp");
+		}
+
+	}
+
+	/**
+	 * 教师评阅学习记录--显示
+	 */
+	public void reviewLearnRecordView() {
+		String recordId = getAttr("recordId");
+		LearnRecord learnRecord = new LearnRecord();
+		LearnRecord lRecord = learnRecord.getLearnRecordById(recordId);
+		Record lRecordType = Db.findFirst("select * from learning_record_type_table where l_record_type_id=?", lRecord.get("l_record_type_id"));
+		setAttr("learnRecord", lRecord);
+		setAttr("lRecordType", lRecordType);
+		render(view("review_record_view.jsp"));
+	}
+
+	/**
+	 * 教师查看学习记录
+	 */
+	public void learnRecordView1() {
+		String recordId = getAttr("recordId");
+		LearnRecord learnRecord = new LearnRecord();
+		LearnRecord lRecord = learnRecord.getLearnRecordById(recordId);
+		Record lRecordType = Db.findFirst("select * from learning_record_type_table where l_record_type_id=?", lRecord.get("l_record_type_id"));
+		setAttr("learnRecord", lRecord);
+		setAttr("lRecordType", lRecordType);
+		render(view("learn_record_view1.jsp"));
+	}
+
+	/**
+	 * 教师评阅学习记录--保存
+	 */
+	public void txReviewRecord() {
+		String recordId = getAttr("recordId");
+		String grade = getAttr("grade");
+		String remark = getAttr("remark");
+		if (0 != Db.update("update learning_record_table set status = 1, grade = ?, remark = ?,review_date=? where l_record_id =?", grade, remark,new Date(),
+				recordId)) {
+			ParaUtils.addMsg(this, "评阅成功！");
+			review();
+		} else {
+			ParaUtils.addMsg(this, "评阅失败！");
+			reviewLearnRecordView();
+		}
+	}
+
+	/**
+	 * 学习记录查询
+	 */
+	public void queryProgramme() {
+		String userId = getSessionAttr(CONST.SESSION_USER_ID); // 获得登录用户ID
+		String schoolId = getSessionAttr(CONST.SESSION_SCHOOL_ID); // 获得登录用户学校
+		// 0—中学生用户、1—中学教师 2—中学管理员 3—高校教师 4—高校管理员  6—创新学院管理员
+		Long role = getModel(Users.class).getBigRole(userId); // 获取用户角色
+
+		StringBuffer from = new StringBuffer();
+		from.append(" from learning_record_table lr left join batch on lr.batch_id = batch.batch_id " // batch批次表
+				+ " left join learning_record_type_table lrt on lr.l_record_type_id = lrt.l_record_type_id" // lrt记录类别
+				+ " left join project_apply pa on lr.project_id = pa.project_id " // pa项目表
+				+ " left join schools collegeSchool on pa.school_id = collegeSchool.school_id " //collegeSchool 承担单位学校
+				+ " left join users student on lr.user_id = student.user_id " // student学生表
+				+ " left join team_detail_table tdt on student.user_id = tdt.user_id "
+				+ " left join team_table tt on tdt.team_id = tt.team_id "
+				+ " left join users highteacher on tt.user_id = highteacher.user_id" // highteacher中学教师
+				+ " left join schools highSchool on student.school_id = highSchool.school_id "// highSchool中学学校
+				+ " where 1 = 1"); 
+
+		if(role == 6){ // 6—创新学院管理员
+			List<Record> batchList = Db.find("select batch_id, batch_name from batch b where b.batch_id in (select lr.batch_id from learning_record_table)  or b.batch_status=1 order by b.batch_status desc,b.batch_id desc");
+			setAttr("batchList", batchList);
+
+			List<Record> projectList = Db.find("select project_id, project_name from project_apply where project_id in (select lr.project_id from learning_record_table)");
+			setAttr("projectList", projectList);
+
+			List<Record> collegeList =Db.find("select school_id, school_name from schools where school_id in(select pa.school_id from learning_record_table lr left join project_apply pa on lr.project_id=pa.project_id)");
+			setAttr("collegeSchoolList", collegeList);
+
+			List<Record> highSchoolList = Db.find("select school_id, school_name from schools where school_id in(select u.school_id from learning_record_table lr left join users u on lr.user_id=u.user_id)");
+			setAttr("highSchoolList", highSchoolList);
+
+		}else if (role == 4) { // 4—高校管理员 
+			Users r=getModel(Users.class).getUserByUserId(userId);
+			List<Record> batchList = Db.find("select batch_id, batch_name from batch b where b.batch_id in (select lr.batch_id from learning_record_table lr left join project_apply pa on lr.project_id=pa.project_id where pa.school_id='"+r.get("school_id")+"')  or b.batch_status=1 order by b.batch_status desc,b.batch_id desc");
+			setAttr("batchList", batchList);
+
+			List<Record> projectList = Db.find("select project_id, project_name from project_apply where project_id in (select lr.project_id from learning_record_table lr left join project_apply pa on lr.project_id=pa.project_id where pa.school_id='"+r.get("school_id")+"')");
+			setAttr("projectList", projectList);
+
+			List<Record> collegeList =Db.find("select school_id,school_name from schools where school_id ='"+r.get("school_id")+"'");
+			setAttr("collegeSchoolList", collegeList);
+
+			List<Record> highSchoolList = Db.find("select school_id,school_name from schools where school_id in (select u.school_id from users u where u.user_id in(select lr.user_id from learning_record_table lr left join project_apply pa on lr.project_id=pa.project_id where pa.school_id='"+r.get("school_id")+"'))");
+			setAttr("highSchoolList", highSchoolList);
+			from.append(" and collegeSchool.school_id = '"+schoolId+"'");
+
+
+		} else if (role == 3) { // 3—高校教师
+			Users r=getModel(Users.class).getUserByUserId(userId);
+			List<Record> batchList = Db.find("select batch_id, batch_name from batch b where b.batch_id in (select lr.batch_id from learning_record_table lr left join project_apply pa on lr.project_id=pa.project_id where pa.user_id='"+r.get("user_id")+"')  or b.batch_status=1 order by b.batch_status desc,b.batch_id desc");
+			setAttr("batchList", batchList);
+
+			List<Record> projectList = Db.find("select project_id, project_name from project_apply where project_id in (select lr.project_id from learning_record_table lr left join project_apply pa on lr.project_id=pa.project_id where pa.user_id='"+r.get("user_id")+"')");
+			setAttr("projectList", projectList);
+
+			List<Record> collegeList =Db.find("select school_id,school_name from schools where school_id ='"+r.get("school_id")+"'");
+			setAttr("collegeSchoolList", collegeList);
+
+			List<Record> highSchoolList = Db.find("select school_id,school_name from schools where school_id in (select u.school_id from users u where u.user_id in(select lr.user_id from learning_record_table lr left join project_apply pa on lr.project_id=pa.project_id where pa.user_id='"+r.get("user_id")+"'))");
+			setAttr("highSchoolList", highSchoolList);
+
+			from.append(" and pa.user_id = '"+userId+"'");
+
+		}else if(role == 2){ // 2—中学管理员
+			Users r=getModel(Users.class).getUserByUserId(userId);
+			List<Record> batchList = Db.find("select b.batch_id,b.batch_name from batch b where b.batch_id in (select lr.batch_id from learning_record_table lr left join users u on lr.user_id=u.user_id where u.school_id='"+r.get("school_id")+"') or b.batch_status=1 order by b.batch_status desc,b.batch_id desc");
+			setAttr("batchList", batchList);
+
+			List<Record> projectList = Db.find("select project_id,project_name from project_apply where project_id in (select lr.project_id from learning_record_table lr join feedback_table ft on lr.project_id=ft.project_id where ft.assigned=1 and ft.highschool_id='"+r.get("school_id")+"')");
+			setAttr("projectList", projectList);
+
+			List<Record> collegeList =Db.find("select school_id,school_name from schools where school_id in (select pa.school_id from learning_record_table lr join feedback_table ft on lr.project_id=ft.project_id left join project_apply pa on ft.project_id=pa.project_id where ft.assigned=1 and ft.highschool_id='"+r.get("school_id")+"')");
+			setAttr("collegeSchoolList", collegeList);
+
+			List<Record> highSchoolList = Db.find("select school_id,school_name from schools where school_id ='"+r.get("school_id")+"'");
+			setAttr("highSchoolList", highSchoolList);
+
+			from.append(" and highSchool.school_id = '"+schoolId+"'");
+		}else if(role == 1){ // 1—中学教师
+			Users r=getModel(Users.class).getUserByUserId(userId);
+			List<Record> batchList = Db.find("select b.batch_id,b.batch_name from batch b where b.batch_id in (select lr.batch_id from learning_record_table lr left join team_detail_table td on lr.user_id=td.user_id left join team_table tt on td.team_id=tt.team_id where tt.user_id='"+r.get("user_id")+"') or b.batch_status=1 order by b.batch_status desc,b.batch_id desc");
+			setAttr("batchList", batchList);
+
+			List<Record> projectList = Db.find("select project_id,project_name from project_apply where project_id in (select lr.project_id from learning_record_table lr left join team_detail_table td on lr.user_id=td.user_id left join team_table tt on td.team_id=tt.team_id where tt.user_id='"+r.get("user_id")+"')");
+			setAttr("projectList", projectList);
+
+			List<Record> collegeList =Db.find("select school_id,school_name from schools where school_id in (select pa.school_id from from learning_record_table lr left join team_detail_table td on lr.user_id=td.user_id left join team_table tt on td.team_id=tt.team_id left join project_apply pa on lr.project_id=pa.project_id where tt.user_id='"+r.get("user_id")+"')");
+			setAttr("collegeSchoolList", collegeList);
+
+			List<Record> highSchoolList = Db.find("select school_id,school_name from schools where school_id ='"+r.get("school_id")+"'");
+			setAttr("highSchoolList", highSchoolList);
+
+			from.append(" and highteacher.user_id = '"+userId+"'");
+
+		}else { // 0—中学生用户
+			// 获取学生参与的当前批次
+			Users r=getModel(Users.class).getUserByUserId(userId);
+			List<Record> batchList = Db.find("select b.batch_id,b.batch_name from batch b where b.batch_id in (select lr.batch_id from learning_record_table lr where lr.user_id ='"+userId+"') or b.batch_status=1 order by b.batch_status desc,b.batch_id desc");
+			setAttr("batchList", batchList);
+
+			// 获取学生参与的项目
+			List<Record> projectList = Db.find("select project_id,project_name from project_apply where project_id in (select lr.project_id from learning_record_table lr where lr.user_id ='"+userId+"')");
+			setAttr("projectList", projectList);
+
+			List<Record> collegeList = Db.find("select school_id,school_name from schools where school_id in (select pa.school_id from from learning_record_table join project_apply pa on lr.project_id=pa.project_id where lr.user_id='"+r.get("user_id")+"')");
+			setAttr("collegeSchoolList", collegeList);
+			
+			List<Record> highSchoolList =Db.find("select school_id, school_name from schools where school_id =?",schoolId);
+			setAttr("highSchoolList", highSchoolList);
+
+			from.append(" and lr.user_id ='"+userId+"'");
+
+		}
+
+		// 获取查询条件
+		List<String> params = new ArrayList<String>();
+		if (!ParaUtils.addParam("batchId", params, this)) {
+			from.append(" and lr.batch_id = ?");
+		}
+		if (!ParaUtils.addParam("projectId", params, this)) {
+			from.append(" and pa.project_id = ?");
+		}
+		if (!ParaUtils.addParam("collegeSchoolId", params, this)) {
+			from.append(" and pa.school_id = ?");
+		}
+		if (!ParaUtils.addParam("highSchoolId", params, this)) {
+			from.append(" and student.school_id = ?");
+		}
+		if (!ParaUtils.addLikeParam("studentName", params, this)) {
+			from.append(" and student.name like ?");
+		}
+
+		// 默认加载当前批次的学习记录,如果当前没有批次，则加载所有批次的学习记录
+		if (getAttr("batchId") == null || getAttr("batchId").equals("")) {
+			Batch batch = getModel(Batch.class).getCurBatch();
+			if (batch != null) {
+				from.append(" and lr.batch_id =" + batch.get("batch_id"));
+				setAttr("batchId", batch.get("batch_id"));
+			} else {
+				setAttr("batchId", -1);
+			}
+		}		
+		from.append(" order by lr.review_date desc");
+		List<Record> list = pages(
+				" select batch.batch_name, pa.project_name, collegeSchool.school_name as collegeSchool, highSchool.school_name as highSchool, student.name, lr.l_record_name, lrt.l_record_type, lr.review_date,lr.l_record_id",
+				from.toString(), params.toArray());
+		render(view("query_record.jsp"));
+	}
+
+	/**
+	 * 查看学习记录详情
+	 */
+	public void queryView(){
+		String recordId = getAttr("recordId");
+		LearnRecord learnRecord = new LearnRecord();
+		LearnRecord lRecord = learnRecord.getLearnRecordById(recordId);
+		Record lRecordType = Db.findFirst("select * from learning_record_type_table where l_record_type_id=?", lRecord.get("l_record_type_id"));
+		setAttr("learnRecord", lRecord);
+		setAttr("lRecordType", lRecordType);
+		render(view("query_view.jsp"));
+	}
+
+
+	/**
+	 * 学习记录上传文件
+	 */
+	public void upload() {
+		UploadFile uf = getFile();
+		String ext = uf.getFileName().substring(uf.getFileName().lastIndexOf(".") + 1);
+		ext = "." + ext;
+		SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMddHHmmssSSS");
+		String fileName = sdf.format(new Date()) + ext;
+		String path = FileUtils.getWebInfPath() + CONST.LEARN_RECORD_PATH;
+		File file = new File(path);
+		// 判断是否存在该文件夹，如果不存在则创建
+		if (!file.exists()) {
+			file.mkdir();
+		}
+		FileUtils.copyFile(uf.getFile().getAbsolutePath(), path, fileName);
+		FileUtils.deleteFile(uf.getFile().getAbsolutePath());
+		renderJson(fileName);
+	}
+
+	/**
+	 * 学习记录下载文件
+	 */
+	public void downLoad() {
+		String docId = getPara("attach_file");
+		try {
+			File f = new File(FileUtils.getWebInfPath() + CONST.LEARN_RECORD_PATH + docId);
+			if (!f.isFile()) {
+				msgOperateError();
+			} else
+				renderFile(f);
+		} catch (Exception e) {
+			msgOperateError();
+		}
+	}	
+
+
+}

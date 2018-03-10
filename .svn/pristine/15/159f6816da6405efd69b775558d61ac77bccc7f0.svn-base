@@ -1,0 +1,293 @@
+package com.eyas.controllers;
+
+import java.io.File;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+
+import com.eyas.base.BaseController;
+import com.eyas.base.CONST;
+import com.eyas.models.Conclusion;
+import com.eyas.models.Users;
+import com.eyas.utils.FileUtils;
+import com.eyas.utils.ID;
+import com.eyas.utils.ParaUtils;
+import com.jfinal.plugin.activerecord.Db;
+import com.jfinal.plugin.activerecord.Record;
+import com.jfinal.upload.UploadFile;
+
+public class ConclusionController extends BaseController {
+
+	@Override
+	protected void setPath() {
+		setPath("/views/conclusion/");
+	}
+	
+	/**
+	 * 维护初始化
+	 * String userId = getSessionAttr(CONST.SESSION_USER_ID); // 获得登录用户ID
+	 * String schoolId = getSessionAttr(CONST.SESSION_SCHOOL_ID); // 获得登录用户学校
+	 * 0—中学生用户、1—中学教师 2—中学管理员 3—高校教师 4—高校管理员 5—创新学院用户 6—创新学院管理员
+	 * Long role = getModel(Users.class).getBigRole(userId); // 获取用户角色
+	 */
+	public void manage(){
+//		String userId = getSessionAttr(CONST.SESSION_USER_ID); //获得登录用户ID
+//		Long role=getModel(Users.class).getBigRole(userId);//获取角色权限
+		StringBuffer from = new StringBuffer();
+		from.append("from conclusion_report_table c left join batch b on c.batch_id=b.batch_id left join project_apply p on c.project_id=p.project_id ");
+		from.append("left join users u on p.user_id=u.user_id left join schools s on u.school_id=s.school_id where 1=1 ");
+		//仅可查看自己提交的报告
+		String userId=getSessionAttr(CONST.SESSION_USER_ID);
+		from.append(" and u.user_id = "+userId+" ");
+		
+		List<String> params = new ArrayList<String>();
+		if (!ParaUtils.addParam("batchId", params, this)) {
+			from.append(" and pr.batch_id = ? ");
+		}
+		if (!ParaUtils.addLikeParam("project_key", params, this)) {
+			from.append(" and p.project_name like ? ");
+		}
+		if (!ParaUtils.addLikeParam("keyWord", params, this)) {
+			from.append(" and c.conclusion_name like ? ");
+		}
+		from.append("order by c.conclusion_status desc");
+		List<Record> list=pages("select b.batch_id, b.batch_name, p.project_id, p.project_name, p.user_id, u.name, s.school_name, c.conclusion_id, c.conclusion_name, c.conclusion_status ", from.toString(), params.toArray());
+		List<Record> batchList=Db.find("select * from batch");
+		setAttr("batchList", batchList);
+		render(view("manage.jsp"));
+	}
+	
+	/**
+	 * 
+	 * 条件：当前批次下；未完结项目；本人为导师；仅有一个报告不可重复
+	 */
+	public void addC(){
+		String userId=getSessionAttr(CONST.SESSION_USER_ID);
+		List<Record> listP=Db.find("select b.batch_id, b.batch_name, p.project_id, p.project_name, b.conclusion_report from project_apply p left join batch b on p.batch_id=b.batch_id where p.submit_status < 9 and p.user_id = "+userId+" ");
+		if(listP!=null&&listP.size()>0){
+			System.out.println("addC:"+listP.size());
+			setAttr("listP", listP);
+			render(view("add.jsp"));
+		}else{
+			ParaUtils.addMsg(this, "未找到您参与的项目");
+			manage();
+		}
+	}
+	
+	/**
+	 * 跳转方法
+	 */
+	public void getListM(){
+		String project_id = getAttr("project_id");
+		String user_id=getSessionAttr(CONST.SESSION_USER_ID);
+		System.out.println("getListM");
+		Record Message = Db.findFirst("select b.batch_id, b.batch_name, p.project_id, p.project_name, b.conclusion_report from project_apply p left join batch b on p.batch_id=b.batch_id where p.submit_status < 9 and p.user_id = ? and p.project_id = ? ",user_id,project_id);
+		setAttr("Message", Message);
+		renderJson();
+	}
+	
+	/**
+	 * 新增方法
+	 */
+	public void txAddConclusion(){
+		if (SAVE.equals(getFlag())) {
+			Conclusion c = new Conclusion();
+			c.set("conclusion_id", ID.getNumId());
+			c.set("batch_id", getPara("batch_id"));
+			c.set("project_id", getPara("project_id"));
+			c.set("conclusion_name", getPara("conclusion_name"));
+			c.set("conclusion_des", getPara("conclusion_des"));
+			c.set("conclusion_path", getPara("attach_file"));
+			c.set("conclusion_status", 0);
+			c.save();
+			msgOperateSuccess();
+		}
+		manage();
+	}
+	
+	/**
+	 * 跳转
+	 */
+	public void viewC(){
+		String conclusionId=getAttr("conclusion_id");
+		Record conclusion=Db.findFirst("select c.conclusion_id, c.conclusion_name, c.conclusion_des, c.conclusion_path, c.conclusion_status, c.batch_id, b.batch_name, b.conclusion_report, c.project_id, p.project_name from conclusion_report_table c left join project_apply p on c.project_id=p.project_id left join batch b on c.batch_id=b.batch_id where conclusion_id = ? ", conclusionId);
+		setAttr("conclusion", conclusion);
+		render(view("view.jsp"));
+	}
+	
+	/**
+	 * 跳转
+	 */
+	public void editC(){
+		String conclusionId=getAttr("conclusion_id");
+		Record conclusion=Db.findFirst("select c.conclusion_id, c.conclusion_name, c.conclusion_des, c.conclusion_path, c.batch_id, b.batch_name, b.conclusion_report, c.project_id, p.project_name from conclusion_report_table c left join project_apply p on c.project_id=p.project_id left join batch b on c.batch_id=b.batch_id where conclusion_id = ? ", conclusionId);
+		setAttr("conclusion", conclusion);
+		render(view("edit.jsp"));
+	}
+	
+	/**
+	 * 修改方法
+	 */
+	public void txEditConclusion(){
+		if (SAVE.equals(getFlag())) {
+			Db.update("update conclusion_report_table set conclusion_name=?, conclusion_des=?, conclusion_path=? where conclusion_id = ? ", getPara("conclusion_name"),getPara("conclusion_des"),getPara("attach_file"),getPara("conclusion_id"));
+			msgOperateSuccess();
+		}
+		manage();
+	}
+	
+	/**
+	 * 删除方法
+	 */
+	public void txDelConclusion(){
+		try {
+			Db.update("delete from conclusion_report_table where conclusion_id = ? ",getPara("conclusion_id"));
+			ParaUtils.addMsg(this, "删除成功");
+		} catch (Exception e) {
+			ParaUtils.addMsg(this, "删除操作失败！");
+		}
+		manage();
+	}
+	
+	/**
+	 * 审核初始化
+	 */
+	public void review(){
+		String userId = getSessionAttr(CONST.SESSION_USER_ID); //获得登录用户ID
+		Long role=getModel(Users.class).getBigRole(userId);//获取角色权限
+		System.out.println("userId:"+userId+" role:"+role);
+		// 0—中学生用户、1—中学教师 2—中学管理员 3—高校教师 4—高校管理员 5—创新学院用户 6—创新学院管理员
+		StringBuffer from = new StringBuffer();
+		from.append("from conclusion_report_table c left join batch b on c.batch_id=b.batch_id left join project_apply p on c.project_id=p.project_id ");
+		from.append("left join users u on p.user_id=u.user_id left join schools s on u.school_id=s.school_id where 1=1 ");
+		if(role==4){
+			from.append(" and c.conclusion_status <= 2 ");
+		}else if(role>4){
+			from.append(" and c.conclusion_status >= 2 ");
+		}else if(role<4){
+			from.append(" and c.conclusion_status >= 4 ");
+		}
+		List<String> params = new ArrayList<String>();
+		if (!ParaUtils.addParam("batchId", params, this)) {
+			from.append(" and pr.batch_id = ? ");
+		}
+		if (!ParaUtils.addLikeParam("project_key", params, this)) {
+			from.append(" and p.project_name like ? ");
+		}
+		if (!ParaUtils.addLikeParam("keyWord", params, this)) {
+			from.append(" and c.conclusion_name like ? ");
+		}
+		from.append("order by c.conclusion_status desc");
+		List<Record> list=pages("select b.batch_id, b.batch_name, p.project_id, p.project_name, p.user_id, u.name, s.school_name, c.conclusion_id, c.conclusion_name, c.conclusion_status ", from.toString(), params.toArray());
+		List<Record> batchList=Db.find("select * from batch");
+		setAttr("batchList", batchList);
+		render(view("checkManage.jsp"));
+	}
+	
+	/**
+	 * 初审跳转
+	 */
+	public void check1(){
+		String conclusionId=getAttr("conclusion_id");
+		Record conclusion=Db.findFirst("select c.conclusion_id, c.conclusion_name, c.conclusion_des, c.conclusion_path, c.college_remark, c.batch_id, b.batch_name, b.conclusion_report, c.project_id, p.project_name from conclusion_report_table c left join project_apply p on c.project_id=p.project_id left join batch b on c.batch_id=b.batch_id where conclusion_id = ? ", conclusionId);
+		setAttr("conclusion", conclusion);
+		render(view("check1.jsp"));
+	}
+	
+	/**
+	 * 初审操作
+	 */
+	public void check1Conclusion(){
+		if (SAVE.equals(getFlag())) {
+			Db.update("update conclusion_report_table set conclusion_status=?, college_date=?, college_remark=? where conclusion_id = ? ", getPara("status1"), new Date(), getPara("college_remark"),getPara("conclusion_id"));
+			msgOperateSuccess();
+		}
+		review();
+	}
+	
+	/**
+	 * 复审跳转
+	 */
+	public void check2(){
+		String conclusionId=getAttr("conclusion_id");
+		Record conclusion=Db.findFirst("select c.conclusion_id, c.conclusion_name, c.conclusion_des, c.conclusion_path, c.conclusion_status, c.college_remark, c.innovation_remark, c.batch_id, b.batch_name, b.conclusion_report, c.project_id, p.project_name from conclusion_report_table c left join project_apply p on c.project_id=p.project_id left join batch b on c.batch_id=b.batch_id where conclusion_id = ? ", conclusionId);
+		setAttr("conclusion", conclusion);
+		render(view("check2.jsp"));
+	}
+	
+	/**
+	 * 复审操作
+	 */
+	public void check2Conclusion(){
+		if (SAVE.equals(getFlag())) {
+			Db.update("update conclusion_report_table set conclusion_status=?, college_date=?, innovation_remark=? where conclusion_id = ? ", getPara("status2"), new Date(), getPara("innovation_remark"),getPara("conclusion_id"));
+			msgOperateSuccess();
+		}
+		review();
+	}
+	
+	/**
+	 * 跳转
+	 */
+	public void checkViewC(){
+		String conclusionId=getAttr("conclusion_id");
+		Record conclusion=Db.findFirst("select c.conclusion_id, c.conclusion_name, c.conclusion_des, c.conclusion_path, c.conclusion_status, c.batch_id, b.batch_name, b.conclusion_report, c.project_id, p.project_name from conclusion_report_table c left join project_apply p on c.project_id=p.project_id left join batch b on c.batch_id=b.batch_id where conclusion_id = ? ", conclusionId);
+		setAttr("conclusion", conclusion);
+		render(view("check_view.jsp"));
+	}
+	
+	/**
+	 * 上传文件
+	 */
+	public void upload() {
+		UploadFile uf = getFile();
+		String ext = uf.getFileName().substring(
+				uf.getFileName().lastIndexOf(".") + 1);
+		ext = "." + ext;
+		SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMddHHmmssSSS");
+		String fileName = sdf.format(new Date()) + ext;
+		String path = FileUtils.getWebInfPath() +CONST.CONCLUSION_PATH;
+		File file = new File(path);
+		//判断是否存在该文件夹，如果不存在则创建
+		if(!file.exists()) {
+			file.mkdir();
+		}
+		FileUtils.copyFile(uf.getFile().getAbsolutePath(), path, fileName);
+		FileUtils.deleteFile(uf.getFile().getAbsolutePath());
+		renderJson(fileName);
+	}
+
+	/**
+	 * 自上传附件下载
+	 */
+	public void downLoad1() {
+		String docId = getPara("attach_file");
+		try {
+			File f = new File(FileUtils.getWebInfPath() +CONST.CONCLUSION_PATH+docId);
+			if(!f.isFile()){
+				msgOperateError();
+			}
+			else renderFile(f);
+		} catch (Exception e) {
+			msgOperateError();
+		}
+	}
+	/**
+	 * 模板下载
+	 */
+	public void downLoad2() {
+		String docId = getPara("attach_file");
+		try {
+			File f = new File(FileUtils.getWebInfPath() +CONST.BATCH_PATH+docId);
+			if(!f.isFile()){
+				msgOperateError();
+			}
+			else renderFile(f);
+		} catch (Exception e) {
+			msgOperateError();
+		}
+	}
+	
+
+}
